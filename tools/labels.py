@@ -8,12 +8,18 @@ from __future__ import annotations
 
 import csv
 import random
+import re
 from datetime import datetime
 from pathlib import Path
+
+from PIL import Image
 
 FIELDS = ["pdf_id", "page", "rotation", "status", "labeled_at"]
 ROTATIONS = {0, 90, 180, 270}
 STATUSES = {"ok", "skip"}
+ID_RE = re.compile(r"^[A-Za-z0-9_-]{10,}$")
+THUMB_SIDE = 320
+THUMB_QUALITY = 80
 
 
 class LabelStore:
@@ -89,3 +95,31 @@ def build_queue(pages_manifest: Path, clusters_csv: Path | None, seed: int = 0) 
     for i in range(max((len(x) for x in lists), default=0)):
         queue.extend(x[i] for x in lists if i < len(x))
     return queue
+
+
+def image_path(pages_dir: Path, thumbs_dir: Path, pdf_id: str, page: int, size: str) -> Path | None:
+    """Ruta de la imagen de una página (`full` = PNG original, `thumb` = JPEG de 320 px).
+
+    Es la frontera de seguridad del servidor: valida el id contra ID_RE (sin separadores
+    ni `..`), así que nunca devuelve rutas fuera de pages_dir/thumbs_dir.
+    Devuelve None si el id, la página o el tamaño son inválidos o el PNG no existe.
+    """
+    if size not in ("thumb", "full") or not isinstance(pdf_id, str) or not ID_RE.fullmatch(pdf_id):
+        return None
+    if not isinstance(page, int) or page < 1:
+        return None
+    png = Path(pages_dir) / pdf_id / f"{page:03d}.png"
+    if not png.is_file():
+        return None
+    if size == "full":
+        return png
+    thumb = Path(thumbs_dir) / pdf_id / f"{page:03d}.jpg"
+    if not thumb.exists():
+        thumb.parent.mkdir(parents=True, exist_ok=True)
+        tmp = thumb.with_suffix(".jpg.part")
+        with Image.open(png) as im:
+            im = im.convert("L")
+            im.thumbnail((THUMB_SIDE, THUMB_SIDE))
+            im.save(tmp, format="JPEG", quality=THUMB_QUALITY)
+        tmp.replace(thumb)
+    return thumb

@@ -1,6 +1,7 @@
 import csv
 
 import pytest
+from PIL import Image
 
 import labels
 
@@ -81,3 +82,45 @@ def test_queue_without_clusters_file(tmp_path):
     _manifest(m, [("a", 1, "ok"), ("a", 2, "ok"), ("b", "", "error")])
     q = labels.build_queue(m, None)
     assert sorted(q) == [("a", 1), ("a", 2)]
+
+
+PDF = "1QVHKvpf9r_QaydcdjZpTFRhJlrVklTfh"
+
+
+def _png(pages_dir, pdf_id=PDF, page=1, size=(1275, 1650)):
+    d = pages_dir / pdf_id
+    d.mkdir(parents=True, exist_ok=True)
+    p = d / f"{page:03d}.png"
+    Image.new("L", size, 255).save(p)
+    return p
+
+
+def test_thumb_created_once(tmp_path):
+    pages, thumbs = tmp_path / "pages", tmp_path / "thumbs"
+    _png(pages)
+    t = labels.image_path(pages, thumbs, PDF, 1, "thumb")
+    assert t == thumbs / PDF / "001.jpg"
+    with Image.open(t) as im:
+        assert im.size == (247, 320)
+        assert im.format == "JPEG"
+    mtime = t.stat().st_mtime_ns
+    assert labels.image_path(pages, thumbs, PDF, 1, "thumb") == t
+    assert t.stat().st_mtime_ns == mtime
+    assert not list((thumbs / PDF).glob("*.part"))
+
+
+def test_full_returns_png(tmp_path):
+    pages, thumbs = tmp_path / "pages", tmp_path / "thumbs"
+    png = _png(pages)
+    assert labels.image_path(pages, thumbs, PDF, 1, "full") == png
+
+
+def test_image_rejects_bad_ids(tmp_path):
+    pages, thumbs = tmp_path / "pages", tmp_path / "thumbs"
+    _png(pages)
+    assert labels.image_path(pages, thumbs, "../../etc", 1, "full") is None
+    assert labels.image_path(pages, thumbs, "abc", 1, "full") is None
+    assert labels.image_path(pages, thumbs, PDF, 0, "full") is None
+    assert labels.image_path(pages, thumbs, PDF, 1, "big") is None
+    assert labels.image_path(pages, thumbs, PDF, 2, "full") is None
+    assert labels.image_path(pages, thumbs, PDF, 2, "thumb") is None
