@@ -124,3 +124,27 @@ def test_image_rejects_bad_ids(tmp_path):
     assert labels.image_path(pages, thumbs, PDF, 1, "big") is None
     assert labels.image_path(pages, thumbs, PDF, 2, "full") is None
     assert labels.image_path(pages, thumbs, PDF, 2, "thumb") is None
+
+
+def test_thumb_concurrent_writers(tmp_path):
+    import threading
+    pages, thumbs = tmp_path / "pages", tmp_path / "thumbs"
+    _png(pages)
+    results, errors = [], []
+
+    def work():
+        try:
+            results.append(labels.image_path(pages, thumbs, PDF, 1, "thumb"))
+        except Exception as e:  # noqa: BLE001
+            errors.append(e)
+
+    ts = [threading.Thread(target=work) for _ in range(8)]
+    for t in ts:
+        t.start()
+    for t in ts:
+        t.join()
+    assert not errors
+    assert len(results) == 8 and all(r is not None and r.is_file() for r in results)
+    assert not list(thumbs.rglob("*.part"))
+    with Image.open(results[0]) as im:
+        im.load()

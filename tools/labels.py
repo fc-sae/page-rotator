@@ -7,8 +7,10 @@ La cola recorre los clústeres en round-robin para ver variedad de constancias d
 from __future__ import annotations
 
 import csv
+import os
 import random
 import re
+import threading
 from datetime import datetime
 from pathlib import Path
 
@@ -116,10 +118,13 @@ def image_path(pages_dir: Path, thumbs_dir: Path, pdf_id: str, page: int, size: 
     thumb = Path(thumbs_dir) / pdf_id / f"{page:03d}.jpg"
     if not thumb.exists():
         thumb.parent.mkdir(parents=True, exist_ok=True)
-        tmp = thumb.with_suffix(".jpg.part")
-        with Image.open(png) as im:
-            im = im.convert("L")
-            im.thumbnail((THUMB_SIDE, THUMB_SIDE))
-            im.save(tmp, format="JPEG", quality=THUMB_QUALITY)
-        tmp.replace(thumb)
+        tmp = thumb.with_suffix(f".jpg.{os.getpid()}.{threading.get_ident()}.part")
+        try:
+            with Image.open(png) as im:
+                im = im.convert("L")
+                im.thumbnail((THUMB_SIDE, THUMB_SIDE))
+                im.save(tmp, format="JPEG", quality=THUMB_QUALITY)
+            tmp.replace(thumb)
+        finally:
+            tmp.unlink(missing_ok=True)
     return thumb
