@@ -26,6 +26,7 @@
   #overlay { display: none; position: fixed; inset: 0; z-index: 10; background: rgba(0,0,0,.92); align-items: center; justify-content: center; }
   #overlay.on { display: flex; }
   #overlay img { max-width: 96vw; max-height: 96vh; }
+  #overlay img.rot { max-width: 96vh; max-height: 96vw; }
 </style>
 </head>
 <body>
@@ -145,7 +146,9 @@
 
   function showOverlay() {
     overlayImg.src = imgUrl(pages[sel], 'full');
-    overlayImg.style.transform = 'rotate(' + labels[sel].rotation + 'deg)';
+    var r = labels[sel].rotation;
+    overlayImg.classList.toggle('rot', r === 90 || r === 270);
+    overlayImg.style.transform = 'rotate(' + r + 'deg)';
     overlay.classList.add('on');
   }
   function hideOverlay() { overlay.classList.remove('on'); overlayImg.removeAttribute('src'); }
@@ -155,6 +158,7 @@
   }
 
   function setScreen(p, l) {
+    hideOverlay();
     pages = p; labels = l; sel = 0;
     render();
   }
@@ -178,7 +182,13 @@
   function fail(e) { showError('Error: no se pudo comunicar con el servidor (' + e.message + '). La pantalla no avanzó; intenta de nuevo.'); }
 
   function submit() {
-    if (busy || !pages.length) return;
+    if (busy) return;
+    if (!pages.length) {  // carga fallida o cola vacía: volver a consultar
+      busy = true;
+      clearError();
+      loadBatch().catch(fail).then(function () { busy = false; });
+      return;
+    }
     busy = true;
     clearError();
     var sent = {pages: pages, labels: labels.map(function (l) { return {rotation: l.rotation, status: l.status}; })};
