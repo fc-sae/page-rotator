@@ -1,13 +1,15 @@
 """Servidor local de etiquetado: sirve la interfaz, lotes de páginas, miniaturas y guarda etiquetas.
 
-Solo escucha en 127.0.0.1. Uso: uv run label.py [--port 8765] [--target 1000] [--no-browser]
+Solo escucha en 127.0.0.1. Uso: uv run python label.py [--port 8765] [--target 1000] [--no-browser]
 """
 
 from __future__ import annotations
 
 import argparse
 import csv
+import errno
 import json
+import sys
 import threading
 import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -46,7 +48,9 @@ class _Server(ThreadingHTTPServer):
         self.queue = build_queue(self.pages_dir / "manifest.csv", clusters_csv)
 
     def progress(self) -> dict:
-        return {"labeled": len(self.store), "target": self.target, "total": len(self.queue)}
+        skipped = sum(1 for r in self.store.labels.values() if r["status"] == "skip")
+        return {"labeled": len(self.store), "target": self.target, "total": len(self.queue),
+                "skipped": skipped}
 
 
 class _Handler(BaseHTTPRequestHandler):
@@ -70,7 +74,13 @@ class _Handler(BaseHTTPRequestHandler):
     def _text404(self, msg: str = "No encontrado") -> None:
         self._send(404, msg.encode("utf-8"), "text/plain; charset=utf-8")
 
+    def _host_ok(self) -> bool:
+        port = self.server.server_address[1]
+        return self.headers.get("Host") in (f"127.0.0.1:{port}", f"localhost:{port}")
+
     def do_GET(self) -> None:
+        if not self._host_ok():
+            return self._send(403, "Host no permitido".encode("utf-8"), "text/plain; charset=utf-8")
         url = urlsplit(self.path)
         if url.path == "/":
             try:
@@ -121,8 +131,13 @@ class _Handler(BaseHTTPRequestHandler):
         self._send(200, data, CONTENT_TYPES[path.suffix], {"Cache-Control": "max-age=86400"})
 
     def do_POST(self) -> None:
+        if not self._host_ok():
+            return self._json(403, {"error": "Host no permitido"})
         if urlsplit(self.path).path != "/api/labels":
             return self._text404()
+        ctype = (self.headers.get("Content-Type") or "").split(";")[0].strip().lower()
+        if ctype != "application/json":
+            return self._json(415, {"error": "se requiere Content-Type: application/json"})
         try:
             length = int(self.headers.get("Content-Length", "0"))
         except ValueError:
@@ -139,6 +154,8 @@ class _Handler(BaseHTTPRequestHandler):
                 progress = self.server.progress()
         except (ValueError, KeyError, TypeError) as e:
             return self._json(400, {"error": f"petición inválida: {e!r}"})
+        except OSError as e:
+            return self._json(500, {"error": f"No se pudo escribir labels.csv: {e}"})
         self._json(200, {"progress": progress})
 
 
@@ -160,7 +177,16 @@ def main(argv: list[str] | None = None) -> None:
     args = ap.parse_args(argv)
 
     clusters = args.clusters if args.clusters.exists() else None
-    srv = make_server(args.pages, clusters, args.labels, args.thumbs, args.target, args.port)
+    manifest = args.pages / "manifest.csv"
+    if not manifest.exists():
+        sys.exit(f"No existe {manifest}; corre render.py primero.")
+    try:
+        srv = make_server(args.pages, clusters, args.labels, args.thumbs, args.target, args.port)
+    except OSError as e:
+        sys.exit(f"El puerto {args.port} está ocupado (¿ya está abierta la herramienta?). Usa --port."
+                 if e.errno == errno.EADDRINUSE else f"No se pudo iniciar el servidor: {e}")
+    except ValueError as e:
+        sys.exit(str(e))
     url = f"http://127.0.0.1:{srv.server_address[1]}/"
     p = srv.progress()
     print(f"Etiquetado en {url}  ({p['labeled']}/{p['target']} etiquetadas, {p['total']} páginas en cola)")

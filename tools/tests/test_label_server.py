@@ -71,7 +71,7 @@ def test_batch_returns_unlabeled_pages(server):
     assert len(d["pages"]) == 3
     assert set(d["pages"][0]) == {"pdf_id", "page", "cluster"}
     assert d["pages"][0]["cluster"] is None
-    assert d["progress"] == {"labeled": 0, "target": 1000, "total": 4}
+    assert d["progress"] == {"labeled": 0, "target": 1000, "total": 4, "skipped": 0}
 
 
 def test_post_labels_then_batch_skips_them(server):
@@ -211,3 +211,52 @@ def test_index_serves_ui(server):
         assert r.headers["Content-Type"].startswith("text/html")
         body = r.read().decode("utf-8")
     assert "↶" in body and "↷" in body
+
+
+def test_write_oserror_returns_500(server, monkeypatch):
+    def boom(rows):
+        raise OSError("disco lleno")
+    monkeypatch.setattr(server.store, "add", boom)
+    with pytest.raises(urllib.error.HTTPError) as e:
+        post(server, [row()])
+    assert e.value.code == 500
+    assert "No se pudo escribir labels.csv" in json.load(e.value)["error"]
+
+
+def test_wrong_host_is_403(server):
+    for path in ("/api/batch", "/"):
+        req = urllib.request.Request(url(server, path), headers={"Host": "evil.example:80"})
+        with pytest.raises(urllib.error.HTTPError) as e:
+            urllib.request.urlopen(req)
+        assert e.value.code == 403
+    req = urllib.request.Request(url(server, "/api/labels"), data=b"[]", method="POST",
+                                 headers={"Content-Type": "application/json", "Host": "evil.example"})
+    with pytest.raises(urllib.error.HTTPError) as e:
+        urllib.request.urlopen(req)
+    assert e.value.code == 403
+    port = server.server_address[1]
+    req = urllib.request.Request(url(server, "/api/batch"), headers={"Host": f"localhost:{port}"})
+    with urllib.request.urlopen(req) as r:
+        assert r.status == 200
+
+
+def test_post_requires_json_content_type(server):
+    req = urllib.request.Request(url(server, "/api/labels"), data=json.dumps([row()]).encode(),
+                                 method="POST", headers={"Content-Type": "text/plain"})
+    with pytest.raises(urllib.error.HTTPError) as e:
+        urllib.request.urlopen(req)
+    assert e.value.code == 415
+    assert get_json(server, "/api/batch")["progress"]["labeled"] == 0
+
+
+def test_post_non_list_is_400(server):
+    with pytest.raises(urllib.error.HTTPError) as e:
+        post(server, {"pdf_id": PDF_A})
+    assert e.value.code == 400
+
+
+def test_progress_includes_skipped(server):
+    with post(server, [row(PDF_A, 1, 0, "skip"), row(PDF_A, 2, 90, "ok")]) as r:
+        p = json.load(r)["progress"]
+    assert p["labeled"] == 2 and p["skipped"] == 1
+    assert get_json(server, "/api/batch")["progress"]["skipped"] == 1

@@ -10,6 +10,7 @@
   header { position: sticky; top: 0; z-index: 5; background: #2b2d31; padding: 8px 14px; border-bottom: 1px solid #111; }
   #titulo { font-weight: 600; font-size: 16px; }
   #ayuda { font-size: 13px; color: #b5bac1; margin-top: 3px; }
+  #estado { font-size: 13px; color: #ffb300; margin-top: 3px; min-height: 0; }
   #error { display: none; margin-top: 6px; padding: 6px 10px; background: #7a1f1f; color: #fff; border-radius: 4px; font-size: 14px; }
   #fin { display: none; margin: 60px auto; text-align: center; font-size: 20px; color: #9fd69f; }
   #grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(170px, 1fr)); gap: 10px; padding: 12px; }
@@ -33,6 +34,7 @@
 <header>
   <div id="titulo">Etiquetado — 0 / 0</div>
   <div id="ayuda">←→↑↓ mover · R ↷ derecha · E ↶ izquierda · X duda · Espacio ver grande · Enter guardar y siguiente · Retroceso anterior</div>
+  <div id="estado"></div>
   <div id="error"></div>
 </header>
 <div id="fin">Terminado: no quedan páginas por etiquetar</div>
@@ -47,15 +49,34 @@
   var errBox = document.getElementById('error');
   var finBox = document.getElementById('fin');
   var tituloEl = document.getElementById('titulo');
+  var estadoEl = document.getElementById('estado');
 
   var pages = [];       // [{pdf_id, page, cluster}]
   var labels = [];      // [{rotation, status}] paralelo a pages
   var sel = 0;
   var busy = false;
   var history = [];     // [{pages, labels}] pantallas ya enviadas
-  var progress = {labeled: 0, target: 0, total: 0};
+  var drafts = {};      // 'pdf_id/page' -> {rotation, status}: correcciones aún no enviadas
+  var progress = {labeled: 0, target: 0, total: 0, skipped: 0};
+  var pendingImgs = 0;  // miniaturas de la pantalla actual sin load/error todavía
+  var lastImgEvent = 0;
+  var SETTLE_MS = 300;
+  var readyTimer = null;
+
+  function draftKey(p) { return p.pdf_id + '/' + p.page; }
+
+  function imagesReady() {
+    return pendingImgs === 0 && (Date.now() - lastImgEvent) >= SETTLE_MS;
+  }
+  function updateEstado() {
+    clearTimeout(readyTimer);
+    if (imagesReady()) { estadoEl.textContent = ''; return; }
+    estadoEl.textContent = 'Cargando imágenes…';
+    readyTimer = setTimeout(updateEstado, 60);
+  }
 
   function badgeText(l) {
+    if (l.broken) return 'sin imagen';
     if (l.status === 'skip') return '? duda';
     if (l.rotation === 90) return '↷ 90°';
     if (l.rotation === 180) return '↻ 180°';
@@ -67,7 +88,8 @@
   function clearError() { errBox.style.display = 'none'; }
 
   function updateTitle() {
-    tituloEl.textContent = 'Etiquetado — ' + progress.labeled + ' / ' + progress.target;
+    tituloEl.textContent = 'Etiquetado — ' + progress.labeled + ' / ' + progress.target +
+      ' (' + (progress.skipped || 0) + ' duda)';
   }
 
   function imgUrl(p, size) { return '/img/' + encodeURIComponent(p.pdf_id) + '/' + p.page + '?size=' + size; }
@@ -84,12 +106,23 @@
 
   function render() {
     grid.innerHTML = '';
+    var myLabels = labels;
+    pendingImgs = 0;
+    lastImgEvent = Date.now();
     pages.forEach(function (p, i) {
       var c = document.createElement('div');
       c.className = 'cell';
       var box = document.createElement('div');
       box.className = 'box';
       var img = document.createElement('img');
+      pendingImgs++;
+      img.addEventListener('load', function () { pendingImgs--; lastImgEvent = Date.now(); updateEstado(); });
+      img.addEventListener('error', function () {
+        pendingImgs--; lastImgEvent = Date.now();
+        var l = labels[i];
+        if (l && labels === myLabels) { l.broken = true; l.status = 'skip'; l.rotation = 0; refreshCell(i); }
+        updateEstado();
+      });
       img.src = imgUrl(p, 'thumb');
       img.alt = 'Página ' + p.page;
       img.draggable = false;
@@ -99,8 +132,12 @@
       var btns = document.createElement('div');
       btns.className = 'btns';
       var left = document.createElement('button');
+      left.tabIndex = -1;
+      left.addEventListener('mousedown', function (e) { e.preventDefault(); });
       left.textContent = '↶'; left.title = 'Girar a la izquierda (E)';
       var right = document.createElement('button');
+      right.tabIndex = -1;
+      right.addEventListener('mousedown', function (e) { e.preventDefault(); });
       right.textContent = '↷'; right.title = 'Girar a la derecha (R)';
       btns.appendChild(left); btns.appendChild(right);
       c.appendChild(box); c.appendChild(badge); c.appendChild(btns);
@@ -110,6 +147,7 @@
       grid.appendChild(c);
     });
     for (var i = 0; i < pages.length; i++) refreshCell(i);
+    updateEstado();
     finBox.style.display = pages.length ? 'none' : 'block';
     updateTitle();
     window.scrollTo(0, 0);
@@ -130,21 +168,24 @@
   }
 
   function rotate(delta) {
-    if (!pages.length) return;
+    if (busy || !pages.length) return;
     var l = labels[sel];
+    if (l.broken) return;
     l.rotation = (l.rotation + delta) % 360;
     refreshCell(sel);
     if (overlay.classList.contains('on')) showOverlay();
   }
 
   function toggleSkip() {
-    if (!pages.length) return;
+    if (busy || !pages.length) return;
     var l = labels[sel];
+    if (l.broken) return;
     l.status = l.status === 'skip' ? 'ok' : 'skip';
     refreshCell(sel);
   }
 
   function showOverlay() {
+    overlayImg.removeAttribute('src');
     overlayImg.src = imgUrl(pages[sel], 'full');
     var r = labels[sel].rotation;
     overlayImg.classList.toggle('rot', r === 90 || r === 270);
@@ -175,7 +216,10 @@
   function loadBatch() {
     return fetchJson('/api/batch?n=' + N).then(function (d) {
       progress = d.progress;
-      setScreen(d.pages, d.pages.map(function () { return {rotation: 0, status: 'ok'}; }));
+      setScreen(d.pages, d.pages.map(function (p) {
+        var dr = drafts[draftKey(p)];
+        return dr ? {rotation: dr.rotation, status: dr.status} : {rotation: 0, status: 'ok'};
+      }));
     });
   }
 
@@ -183,6 +227,7 @@
 
   function submit() {
     if (busy) return;
+    if (pages.length && !imagesReady()) { updateEstado(); return; }
     if (!pages.length) {  // carga fallida o cola vacía: volver a consultar
       busy = true;
       clearError();
@@ -198,6 +243,7 @@
     fetchJson('/api/labels', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body)})
       .then(function (d) {
         progress = d.progress;
+        sent.pages.forEach(function (p) { delete drafts[draftKey(p)]; });
         history.push(sent);
         return loadBatch();
       })
@@ -208,6 +254,9 @@
   function back() {
     if (busy || !history.length) return;
     clearError();
+    pages.forEach(function (p, i) {
+      drafts[draftKey(p)] = {rotation: labels[i].rotation, status: labels[i].status};
+    });
     var prev = history.pop();
     setScreen(prev.pages, prev.labels.map(function (l) { return {rotation: l.rotation, status: l.status}; }));
   }

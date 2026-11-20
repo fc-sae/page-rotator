@@ -148,3 +148,27 @@ def test_thumb_concurrent_writers(tmp_path):
     assert not list(thumbs.rglob("*.part"))
     with Image.open(results[0]) as im:
         im.load()
+
+
+def test_append_after_missing_trailing_newline(tmp_path):
+    p = tmp_path / "labels.csv"
+    p.write_text("pdf_id,page,rotation,status,labeled_at\na,1,90,ok,2026-01-01T00:00:00", encoding="utf-8")
+    s = labels.LabelStore(p)
+    s.add([{"pdf_id": "b", "page": 2, "rotation": 180, "status": "ok"}])
+    s2 = labels.LabelStore(p)
+    assert len(s2) == 2 and s2.labels[("b", 2)]["rotation"] == 180
+
+
+def test_invalid_row_on_load_names_line(tmp_path):
+    p = tmp_path / "labels.csv"
+    p.write_text("pdf_id,page,rotation,status,labeled_at\n"
+                 "a,1,90,ok,x\nb,2,45,ok,x\n", encoding="utf-8")
+    with pytest.raises(ValueError, match="línea 3"):
+        labels.LabelStore(p)
+
+
+def test_build_queue_dedupes(tmp_path):
+    m = tmp_path / "manifest.csv"
+    _manifest(m, [("a", 1, "ok"), ("a", 1, "ok"), ("a", 2, "ok")])
+    q = labels.build_queue(m, None)
+    assert sorted(q) == [("a", 1), ("a", 2)]

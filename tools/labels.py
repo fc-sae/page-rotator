@@ -30,9 +30,21 @@ class LabelStore:
         self.labels: dict[tuple[str, int], dict] = {}
         if self.path.exists() and self.path.stat().st_size > 0:
             with self.path.open(newline="", encoding="utf-8") as f:
-                for row in csv.DictReader(f):
-                    row["page"] = int(row["page"])
-                    row["rotation"] = int(row["rotation"])
+                reader = csv.DictReader(f)
+                for row in reader:
+                    try:
+                        row["page"] = int(row["page"])
+                        row["rotation"] = int(row["rotation"])
+                        if row["page"] < 1:
+                            raise ValueError("página < 1")
+                        if row["rotation"] not in ROTATIONS:
+                            raise ValueError(f"rotación {row['rotation']}")
+                        if row["status"] not in STATUSES:
+                            raise ValueError(f"estado {row['status']!r}")
+                        if not row["pdf_id"]:
+                            raise ValueError("pdf_id vacío")
+                    except (ValueError, KeyError, TypeError) as e:
+                        raise ValueError(f"labels.csv línea {reader.line_num} inválida: {e}") from None
                     self.labels[(row["pdf_id"], row["page"])] = row
         self._new = not (self.path.exists() and self.path.stat().st_size > 0)
         self._f = None
@@ -50,15 +62,24 @@ class LabelStore:
             clean.append({"pdf_id": str(r["pdf_id"]), "page": int(r["page"]),
                           "rotation": int(rotation), "status": status, "labeled_at": now})
         if self._f is None:
+            if self.path.exists() and self.path.stat().st_size > 0:
+                with self.path.open("rb") as rf:
+                    rf.seek(-1, os.SEEK_END)
+                    needs_nl = rf.read(1) != b"\n"
+            else:
+                needs_nl = False
             self._f = self.path.open("a", newline="", encoding="utf-8")
+            if needs_nl:
+                self._f.write("\n")
         w = csv.DictWriter(self._f, fieldnames=FIELDS)
         if self._new:
             w.writeheader()
             self._new = False
         for r in clean:
             w.writerow(r)
-            self.labels[(r["pdf_id"], r["page"])] = r
         self._f.flush()
+        for r in clean:
+            self.labels[(r["pdf_id"], r["page"])] = r
 
     def __contains__(self, key: tuple[str, int]) -> bool:
         return key in self.labels
@@ -76,11 +97,15 @@ def build_queue(pages_manifest: Path, clusters_csv: Path | None, seed: int = 0) 
                 cluster_of[(row["pdf_id"], int(row["page"]))] = int(row["cluster"])
 
     groups: dict[int | str, list[tuple[str, int]]] = {}
+    seen: set[tuple[str, int]] = set()
     with Path(pages_manifest).open(newline="", encoding="utf-8") as f:
         for row in csv.DictReader(f):
             if row["status"] != "ok":
                 continue
             key = (row["pdf_id"], int(row["page"]))
+            if key in seen:
+                continue
+            seen.add(key)
             groups.setdefault(cluster_of.get(key, "sin_cluster"), []).append(key)
 
     rng = random.Random(seed)
