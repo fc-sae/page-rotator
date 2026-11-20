@@ -1,0 +1,37 @@
+[project]
+name = "page-rotator-tools"
+version = "0.1.0"
+description = "Descarga, rasterizado, etiquetado y entrenamiento del clasificador de orientación"
+requires-python = ">=3.12,<3.13"
+dependencies = [
+    "torch>=2.6",
+    "torchvision>=0.21",
+    "timm>=1.0",
+    "onnx>=1.17",
+    "onnxruntime>=1.20",
+    "pypdfium2>=4.30",
+    "pillow>=11.0",
+    "numpy>=2.0",
+    "scikit-learn>=1.5",
+    "tqdm>=4.66",
+]
+
+[dependency-groups]
+dev = ["pytest>=8.3"]
+
+[tool.uv]
+package = false
+
+# PyTorch con CUDA 12.6 (driver 580 / CUDA 13 es compatible hacia atrás).
+[tool.uv.sources]
+torch = { index = "pytorch-cu126" }
+torchvision = { index = "pytorch-cu126" }
+
+[[tool.uv.index]]
+name = "pytorch-cu126"
+url = "https://download.pytorch.org/whl/cu126"
+explicit = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]

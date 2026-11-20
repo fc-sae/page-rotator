@@ -218,3 +218,6 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# page-rotator: datos locales (URLs, PDFs, imágenes, etiquetas)
+data/
