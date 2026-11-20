@@ -1,0 +1,231 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<title>Etiquetado de orientación</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+  * { box-sizing: border-box; }
+  body { margin: 0; font-family: system-ui, sans-serif; background: #1e1f22; color: #e6e6e6; }
+  header { position: sticky; top: 0; z-index: 5; background: #2b2d31; padding: 8px 14px; border-bottom: 1px solid #111; }
+  #titulo { font-weight: 600; font-size: 16px; }
+  #ayuda { font-size: 13px; color: #b5bac1; margin-top: 3px; }
+  #error { display: none; margin-top: 6px; padding: 6px 10px; background: #7a1f1f; color: #fff; border-radius: 4px; font-size: 14px; }
+  #fin { display: none; margin: 60px auto; text-align: center; font-size: 20px; color: #9fd69f; }
+  #grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(170px, 1fr)); gap: 10px; padding: 12px; }
+  .cell { position: relative; aspect-ratio: 1 / 1; background: #fff; border: 3px solid transparent; border-radius: 4px; cursor: pointer; overflow: hidden; }
+  .cell.sel { border-color: #ffb300; box-shadow: 0 0 0 2px #ffb300; }
+  .cell.skip { opacity: 0.4; }
+  .box { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; }
+  .box img { max-width: 100%; max-height: 100%; display: block; transition: transform 0.12s; }
+  .badge { position: absolute; top: 4px; left: 4px; background: #ffb300; color: #000; font-size: 13px; font-weight: 700; padding: 1px 6px; border-radius: 3px; }
+  .badge:empty { display: none; }
+  .btns { position: absolute; bottom: 4px; right: 4px; display: flex; gap: 4px; }
+  .btns button { font-size: 18px; width: 32px; height: 28px; cursor: pointer; border: 1px solid #555; background: rgba(40,40,40,.85); color: #fff; border-radius: 4px; padding: 0; }
+  .btns button:hover { background: #444; }
+  #overlay { display: none; position: fixed; inset: 0; z-index: 10; background: rgba(0,0,0,.92); align-items: center; justify-content: center; }
+  #overlay.on { display: flex; }
+  #overlay img { max-width: 96vw; max-height: 96vh; }
+</style>
+</head>
+<body>
+<header>
+  <div id="titulo">Etiquetado — 0 / 0</div>
+  <div id="ayuda">←→↑↓ mover · R ↷ derecha · E ↶ izquierda · X duda · Espacio ver grande · Enter guardar y siguiente · Retroceso anterior</div>
+  <div id="error"></div>
+</header>
+<div id="fin">Terminado: no quedan páginas por etiquetar</div>
+<div id="grid"></div>
+<div id="overlay"><img alt=""></div>
+<script>
+(function () {
+  var N = 24;
+  var grid = document.getElementById('grid');
+  var overlay = document.getElementById('overlay');
+  var overlayImg = overlay.querySelector('img');
+  var errBox = document.getElementById('error');
+  var finBox = document.getElementById('fin');
+  var tituloEl = document.getElementById('titulo');
+
+  var pages = [];       // [{pdf_id, page, cluster}]
+  var labels = [];      // [{rotation, status}] paralelo a pages
+  var sel = 0;
+  var busy = false;
+  var history = [];     // [{pages, labels}] pantallas ya enviadas
+  var progress = {labeled: 0, target: 0, total: 0};
+
+  function badgeText(l) {
+    if (l.status === 'skip') return '? duda';
+    if (l.rotation === 90) return '↷ 90°';
+    if (l.rotation === 180) return '↻ 180°';
+    if (l.rotation === 270) return '↶ 90°';
+    return '';
+  }
+
+  function showError(msg) { errBox.textContent = msg; errBox.style.display = 'block'; }
+  function clearError() { errBox.style.display = 'none'; }
+
+  function updateTitle() {
+    tituloEl.textContent = 'Etiquetado — ' + progress.labeled + ' / ' + progress.target;
+  }
+
+  function imgUrl(p, size) { return '/img/' + encodeURIComponent(p.pdf_id) + '/' + p.page + '?size=' + size; }
+
+  function refreshCell(i) {
+    var c = grid.children[i];
+    if (!c) return;
+    var l = labels[i];
+    c.querySelector('img').style.transform = 'rotate(' + l.rotation + 'deg)';
+    c.querySelector('.badge').textContent = badgeText(l);
+    c.classList.toggle('skip', l.status === 'skip');
+    c.classList.toggle('sel', i === sel);
+  }
+
+  function render() {
+    grid.innerHTML = '';
+    pages.forEach(function (p, i) {
+      var c = document.createElement('div');
+      c.className = 'cell';
+      var box = document.createElement('div');
+      box.className = 'box';
+      var img = document.createElement('img');
+      img.src = imgUrl(p, 'thumb');
+      img.alt = 'Página ' + p.page;
+      img.draggable = false;
+      box.appendChild(img);
+      var badge = document.createElement('div');
+      badge.className = 'badge';
+      var btns = document.createElement('div');
+      btns.className = 'btns';
+      var left = document.createElement('button');
+      left.textContent = '↶'; left.title = 'Girar a la izquierda (E)';
+      var right = document.createElement('button');
+      right.textContent = '↷'; right.title = 'Girar a la derecha (R)';
+      btns.appendChild(left); btns.appendChild(right);
+      c.appendChild(box); c.appendChild(badge); c.appendChild(btns);
+      c.addEventListener('click', function () { select(i); });
+      left.addEventListener('click', function (e) { e.stopPropagation(); select(i); rotate(270); });
+      right.addEventListener('click', function (e) { e.stopPropagation(); select(i); rotate(90); });
+      grid.appendChild(c);
+    });
+    for (var i = 0; i < pages.length; i++) refreshCell(i);
+    finBox.style.display = pages.length ? 'none' : 'block';
+    updateTitle();
+    window.scrollTo(0, 0);
+  }
+
+  function select(i) {
+    if (!pages.length) return;
+    var old = sel;
+    sel = Math.max(0, Math.min(pages.length - 1, i));
+    refreshCell(old); refreshCell(sel);
+    grid.children[sel].scrollIntoView({block: 'nearest'});
+    if (overlay.classList.contains('on')) showOverlay();
+  }
+
+  function columns() {
+    var cols = getComputedStyle(grid).gridTemplateColumns.split(' ').length;
+    return Math.max(1, cols);
+  }
+
+  function rotate(delta) {
+    if (!pages.length) return;
+    var l = labels[sel];
+    l.rotation = (l.rotation + delta) % 360;
+    refreshCell(sel);
+    if (overlay.classList.contains('on')) showOverlay();
+  }
+
+  function toggleSkip() {
+    if (!pages.length) return;
+    var l = labels[sel];
+    l.status = l.status === 'skip' ? 'ok' : 'skip';
+    refreshCell(sel);
+  }
+
+  function showOverlay() {
+    overlayImg.src = imgUrl(pages[sel], 'full');
+    overlayImg.style.transform = 'rotate(' + labels[sel].rotation + 'deg)';
+    overlay.classList.add('on');
+  }
+  function hideOverlay() { overlay.classList.remove('on'); overlayImg.removeAttribute('src'); }
+  function toggleOverlay() {
+    if (overlay.classList.contains('on')) hideOverlay();
+    else if (pages.length) showOverlay();
+  }
+
+  function setScreen(p, l) {
+    pages = p; labels = l; sel = 0;
+    render();
+  }
+
+  function fetchJson(url, opts) {
+    return fetch(url, opts).then(function (r) {
+      return r.json().catch(function () { return {}; }).then(function (d) {
+        if (!r.ok) throw new Error(d.error || ('HTTP ' + r.status));
+        return d;
+      });
+    });
+  }
+
+  function loadBatch() {
+    return fetchJson('/api/batch?n=' + N).then(function (d) {
+      progress = d.progress;
+      setScreen(d.pages, d.pages.map(function () { return {rotation: 0, status: 'ok'}; }));
+    });
+  }
+
+  function fail(e) { showError('Error: no se pudo comunicar con el servidor (' + e.message + '). La pantalla no avanzó; intenta de nuevo.'); }
+
+  function submit() {
+    if (busy || !pages.length) return;
+    busy = true;
+    clearError();
+    var sent = {pages: pages, labels: labels.map(function (l) { return {rotation: l.rotation, status: l.status}; })};
+    var body = pages.map(function (p, i) {
+      return {pdf_id: p.pdf_id, page: p.page, rotation: labels[i].rotation, status: labels[i].status};
+    });
+    fetchJson('/api/labels', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body)})
+      .then(function (d) {
+        progress = d.progress;
+        history.push(sent);
+        return loadBatch();
+      })
+      .catch(fail)
+      .then(function () { busy = false; });
+  }
+
+  function back() {
+    if (busy || !history.length) return;
+    clearError();
+    var prev = history.pop();
+    setScreen(prev.pages, prev.labels.map(function (l) { return {rotation: l.rotation, status: l.status}; }));
+  }
+
+  document.addEventListener('keydown', function (e) {
+    if (e.ctrlKey || e.metaKey || e.altKey) return;
+    var k = e.key;
+    if (k === 'Escape') { hideOverlay(); return; }
+    if (k === ' ' ) { e.preventDefault(); if (!e.repeat) toggleOverlay(); return; }
+    if (k === 'ArrowLeft' || k === 'ArrowRight' || k === 'ArrowUp' || k === 'ArrowDown') {
+      e.preventDefault();
+      if (k === 'ArrowLeft') select(sel - 1);
+      else if (k === 'ArrowRight') select(sel + 1);
+      else if (k === 'ArrowUp') select(sel - columns() >= 0 ? sel - columns() : sel);
+      else select(sel + columns() <= pages.length - 1 ? sel + columns() : sel);
+      return;
+    }
+    if (k === 'r' || k === 'R') { rotate(90); return; }
+    if (k === 'e' || k === 'E') { rotate(270); return; }
+    if (k === 'x' || k === 'X') { toggleSkip(); return; }
+    if (k === 'Enter') { e.preventDefault(); if (!e.repeat) submit(); return; }
+    if (k === 'Backspace') { e.preventDefault(); back(); return; }
+  });
+  overlay.addEventListener('click', hideOverlay);
+
+  busy = true;
+  loadBatch().catch(fail).then(function () { busy = false; });
+})();
+</script>
+</body>
+</html>

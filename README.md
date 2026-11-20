@@ -30,3 +30,27 @@ uv run pytest           # verifica imports y GPU
 cd ../rotator
 cargo build --release
 ```
+
+## Etiquetado
+
+Herramienta local para marcar la rotación correcta de las páginas (genera `data/labels.csv`):
+
+```bash
+cd tools
+uv run python label.py    # abre http://127.0.0.1:8765/ ; --no-browser, --port, --target
+```
+
+Cada pantalla muestra 24 páginas ya con la corrección aplicada (todas empiezan derechas).
+
+| Tecla | Acción |
+|---|---|
+| ← → ↑ ↓ | mover la selección |
+| R | girar 90° a la derecha (↷) |
+| E | girar 90° a la izquierda (↶) |
+| X | marcar duda / en blanco |
+| Espacio | ver grande (Espacio o Esc cierran) |
+| Enter | guardar la pantalla y pasar a la siguiente |
+| Retroceso | volver a la pantalla anterior para corregir |
+
+Las etiquetas se agregan a `data/labels.csv` en cada Enter (la última fila de cada página gana),
+así que se puede cerrar y continuar después. Las miniaturas se guardan en `data/thumbs/`.

@@ -203,3 +203,11 @@ def test_concurrent_posts(server, tmp_path):
 
 def test_binds_localhost(server):
     assert server.server_address[0] == "127.0.0.1"
+
+
+def test_index_serves_ui(server):
+    with urllib.request.urlopen(url(server, "/")) as r:
+        assert r.status == 200
+        assert r.headers["Content-Type"].startswith("text/html")
+        body = r.read().decode("utf-8")
+    assert "↶" in body and "↷" in body
