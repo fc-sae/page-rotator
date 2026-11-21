@@ -246,3 +246,43 @@ fn bad_model_exit_code_1() {
         .unwrap();
     assert_eq!(o.status.code(), Some(1));
 }
+
+/// Completa la línea `words` (la última palabra es la que se está escribiendo) con el script de bash.
+fn bash_complete(words: &[&str]) -> Vec<String> {
+    let script = Command::new(env!("CARGO_BIN_EXE_page-rotator")).args(["--completions", "bash"]).output().unwrap();
+    assert!(script.status.success());
+    let dir = tempfile::tempdir().unwrap();
+    let path = write(dir.path(), "comp.bash", &script.stdout);
+    let line = words.join(" ");
+    let cmd = format!(
+        "source {}; COMP_WORDS=({line}); COMP_CWORD={}; COMP_LINE='{line}'; COMP_POINT=${{#COMP_LINE}}; \
+         _page__rotator page-rotator '{}' '{}'; printf '%s\\n' \"${{COMPREPLY[@]}}\"",
+        s(&path),
+        words.len() - 1,
+        words[words.len() - 1],
+        words[words.len() - 2],
+    );
+    let o = Command::new("bash").arg("-c").arg(cmd).current_dir(dir.path()).output().unwrap();
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    String::from_utf8(o.stdout).unwrap().lines().map(str::to_string).collect()
+}
+
+#[test]
+fn bash_completion_suggests_options() {
+    let got = bash_complete(&["page-rotator", "--th"]);
+    assert_eq!(got, vec!["--threshold"]);
+    let all = bash_complete(&["page-rotator", "--"]);
+    for opt in ["--dry-run", "--json", "--model", "--pdfium", "--quiet", "--completions"] {
+        assert!(all.iter().any(|o| o == opt), "falta {opt} en {all:?}");
+    }
+    assert_eq!(bash_complete(&["page-rotator", "--completions", "ba"]), vec!["bash"]);
+}
+
+#[test]
+fn completions_do_not_require_input_but_normal_runs_do() {
+    let o = Command::new(env!("CARGO_BIN_EXE_page-rotator")).args(["--completions", "bash"]).output().unwrap();
+    assert!(o.status.success());
+    assert!(String::from_utf8_lossy(&o.stdout).contains("complete -F _page__rotator"));
+    let o = Command::new(env!("CARGO_BIN_EXE_page-rotator")).output().unwrap();
+    assert_eq!(o.status.code(), Some(2));
+}

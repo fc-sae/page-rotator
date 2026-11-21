@@ -91,5 +91,28 @@ target/release/page-rotator [-q] [--threshold 0.9] [--model M.onnx] [--dry-run] 
   alcanza `--threshold`.
 - Salida: 0 OK, 1 error de PDF/modelo (incluye PDF cifrado: aplicar `qpdf --decrypt` antes),
   2 argumentos inválidos.
-- Despliegue: el binario (ONNX Runtime estático, modelo incrustado) + `libpdfium.so` en la misma
-  carpeta (o `PDFIUM_LIB=/ruta/libpdfium.so`). Para las pruebas se usa la de `tools/.venv` (pypdfium2).
+- PDFs con firma digital: si no hay correcciones la salida es idéntica (firma intacta); si las hay, la
+  revisión firmada se conserva y los visores indican que hubo cambios posteriores a la firma.
+- Completion de bash: `page-rotator --completions bash` (la instala `install.sh`).
+
+### Instalación en el servidor
+
+```bash
+cd rotator && ./package.sh        # dist/page-rotator-VERSION-linux-x86_64.tar.gz (+ .sha256)
+# copiar el .tar.gz al servidor, y allí:
+tar xzf page-rotator-*-linux-x86_64.tar.gz && cd page-rotator-*-linux-x86_64
+sudo ./install.sh                 # /usr/local; sin sudo instala en ~/.local; --prefix DIR; --uninstall
+```
+
+El paquete trae el binario (ONNX Runtime estático y modelo incrustado), `libpdfium.so` (la de
+pypdfium2), la completion y un PDF de prueba. `install.sh` revisa glibc (≥ 2.38: Ubuntu 24.04+ /
+Debian 13+) y libstdc++, copia a `PREFIX/lib/page-rotator/`, enlaza `PREFIX/bin/page-rotator` y corre
+una prueba de humo. Reinstalar reemplaza el binario de forma atómica (no rompe procesos en curso).
+
+En el script de sellado, la línea de ocrmypdf se reemplaza por:
+
+```bash
+page-rotator -q --threshold 0.9 "temp_$1" "$1" || { _error "page-rotator falló: $1"; rm -f "temp_$1"; return 1; }
+```
+
+Benchmark contra ocrmypdf: `docs/bench/2026-11-20-test-dorado.md` (`tools/bench.py`).

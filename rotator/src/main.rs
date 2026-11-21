@@ -2,7 +2,8 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use anyhow::{Context, Result, bail};
-use clap::Parser;
+use clap::{CommandFactory, Parser, ValueHint};
+use clap_complete::Shell;
 
 use page_rotator::{PageResult, model, process, render};
 
@@ -10,7 +11,7 @@ use page_rotator::{PageResult, model, process, render};
 ///
 /// Códigos de salida: 0 OK, 1 error de PDF o de modelo, 2 argumentos inválidos.
 #[derive(Parser)]
-#[command(version)]
+#[command(version, after_help = "Completion de bash: page-rotator --completions bash > ~/.local/share/bash-completion/completions/page-rotator")]
 struct Args {
     /// No imprimir el resumen.
     #[arg(short, long)]
@@ -19,10 +20,10 @@ struct Args {
     #[arg(long, default_value_t = 0.9)]
     threshold: f32,
     /// Modelo ONNX (por defecto, el incrustado en el binario).
-    #[arg(long)]
+    #[arg(long, value_hint = ValueHint::FilePath)]
     model: Option<PathBuf>,
     /// libpdfium.so (por defecto: PDFIUM_LIB, junto al binario o del sistema).
-    #[arg(long)]
+    #[arg(long, value_hint = ValueHint::FilePath)]
     pdfium: Option<PathBuf>,
     /// Solo analizar; no escribir OUT.
     #[arg(long)]
@@ -30,9 +31,14 @@ struct Args {
     /// Reporte por página en JSON (stdout).
     #[arg(long)]
     json: bool,
+    /// Imprime el script de completion para el shell indicado y termina.
+    #[arg(long, value_name = "SHELL", exclusive = true)]
+    completions: Option<Shell>,
     /// PDF de entrada.
-    input: PathBuf,
+    #[arg(required_unless_present = "completions", value_hint = ValueHint::FilePath)]
+    input: Option<PathBuf>,
     /// PDF de salida (puede ser el mismo que la entrada). Opcional con --dry-run.
+    #[arg(value_hint = ValueHint::FilePath)]
     output: Option<PathBuf>,
 }
 
@@ -81,6 +87,7 @@ fn write_atomic(path: &Path, bytes: &[u8]) -> Result<()> {
 }
 
 fn run(args: &Args) -> Result<()> {
+    let input = args.input.as_deref().context("falta IN.pdf")?;
     let model_bytes = match &args.model {
         Some(p) => std::fs::read(p).with_context(|| format!("no se pudo leer el modelo {}", p.display()))?,
         None => match model::EMBEDDED {
@@ -90,34 +97,38 @@ fn run(args: &Args) -> Result<()> {
     };
     let mut model = model::Model::from_bytes(&model_bytes)?;
     let pdfium = render::load_pdfium(args.pdfium.as_deref())?;
-    let bytes = std::fs::read(&args.input).with_context(|| format!("no se pudo leer {}", args.input.display()))?;
-    let (doc, results) = process(&bytes, &pdfium, &mut model, args.threshold)
-        .with_context(|| format!("{}", args.input.display()))?;
+    let bytes = std::fs::read(input).with_context(|| format!("no se pudo leer {}", input.display()))?;
+    let (doc, results) =
+        process(&bytes, &pdfium, &mut model, args.threshold).with_context(|| format!("{}", input.display()))?;
     if args.json {
-        println!("{}", report_json(&args.input, &results));
+        println!("{}", report_json(input, &results));
     }
     let changed: Vec<&PageResult> = results.iter().filter(|r| r.new_rotate != r.rotate).collect();
     if !args.quiet {
         let detail: Vec<String> = changed.iter().map(|r| format!("p{} {}°→{}°", r.page, r.rotate, r.new_rotate)).collect();
         eprintln!(
             "{}: {} páginas, {} corregidas{}{}",
-            args.input.display(),
+            input.display(),
             results.len(),
             changed.len(),
             if detail.is_empty() { "" } else { " (" },
             if detail.is_empty() { String::new() } else { detail.join(", ") + ")" }
         );
     }
-    if let Some(out) = &args.output {
-        if !args.dry_run {
-            write_atomic(out, &doc.to_bytes()?)?;
-        }
+    if let Some(out) = &args.output
+        && !args.dry_run
+    {
+        write_atomic(out, &doc.to_bytes()?)?;
     }
     Ok(())
 }
 
 fn main() -> ExitCode {
     let args = Args::parse();
+    if let Some(shell) = args.completions {
+        clap_complete::generate(shell, &mut Args::command(), "page-rotator", &mut std::io::stdout());
+        return ExitCode::SUCCESS;
+    }
     if !(0.0..=1.0).contains(&args.threshold) {
         eprintln!("error: --threshold debe estar entre 0 y 1");
         return ExitCode::from(2);
