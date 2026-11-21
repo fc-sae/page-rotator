@@ -76,3 +76,20 @@ Con `--predictions` cada página arranca con la rotación predicha (Enter confir
 confianza. Con `--recheck` cada página muestra tu etiqueta actual y el tooltip dice qué predice el modelo.
 La partición train/val/test es por PDF y se fija en `data/splits/split.csv` la primera vez; `test` será el
 test dorado, así que `train.py --test` se usa poco.
+
+## CLI `page-rotator`
+
+```bash
+cd tools && uv run python export.py          # data/models/orientation.onnx
+cd ../rotator && cargo build --release       # incrusta el modelo si existe data/models/orientation.onnx
+target/release/page-rotator [-q] [--threshold 0.9] [--model M.onnx] [--dry-run] [--json] IN.pdf [OUT.pdf]
+```
+
+- Solo cambia `/Rotate` (actualización incremental: los bytes originales quedan intactos); si no hay
+  cambios, OUT es copia exacta de IN. OUT puede ser el mismo IN.
+- Cada página se evalúa tal como se ve y girada 180°; se corrige solo si ambas coinciden y la confianza
+  alcanza `--threshold`.
+- Salida: 0 OK, 1 error de PDF/modelo (incluye PDF cifrado: aplicar `qpdf --decrypt` antes),
+  2 argumentos inválidos.
+- Despliegue: el binario (ONNX Runtime estático, modelo incrustado) + `libpdfium.so` en la misma
+  carpeta (o `PDFIUM_LIB=/ruta/libpdfium.so`). Para las pruebas se usa la de `tools/.venv` (pypdfium2).

@@ -64,15 +64,23 @@ pub fn rot180(x: &[f32]) -> Vec<f32> {
     x.iter().rev().copied().collect()
 }
 
-/// Rasteriza la página `index` (0-based) a un tensor `size`×`size`.
+/// Resolución de rasterizado de `tools/render.py`; el modelo se entrenó con páginas a 150 dpi reducidas.
+pub const DPI: f32 = 150.0;
+/// Lado largo máximo del rasterizado intermedio (páginas enormes); casi no cambia el resultado reducido.
+const MAX_SIDE: f32 = 4000.0;
+
+/// Rasteriza la página `index` (0-based) a un tensor `size`×`size`: 150 dpi en gris y luego reducción
+/// bilineal con antialias (como `Image.resize(BILINEAR)` de PIL). Rasterizar directo al tamaño final
+/// engrosa las líneas finas y cambia la predicción.
 pub fn page_tensor(doc: &PdfDocument, index: usize, size: u32) -> Result<Vec<f32>> {
     let page = doc
         .pages()
         .get(index as PdfPageIndex)
         .map_err(|e| anyhow!("pdfium no pudo abrir la página {}: {e:?}", index + 1))?;
-    let (w, h) = fit(page.width().value, page.height().value, size);
+    let (pw, ph) = (page.width().value, page.height().value);
+    let scale = (DPI / 72.0).min(MAX_SIDE / pw.max(ph).max(1.0));
     let cfg = PdfRenderConfig::new()
-        .set_target_size(w as Pixels, h as Pixels)
+        .scale_page_by_factor(scale)
         .use_grayscale_rendering(true)
         .render_form_data(true);
     let bitmap = page
@@ -82,14 +90,9 @@ pub fn page_tensor(doc: &PdfDocument, index: usize, size: u32) -> Result<Vec<f32
         .as_image()
         .map_err(|e| anyhow!("imagen inválida en la página {}: {e:?}", index + 1))?
         .to_luma8();
-    let (iw, ih) = img.dimensions();
-    let (iw, ih) = (iw.min(size), ih.min(size));
-    let gray: Vec<u8> = if (iw, ih) == img.dimensions() {
-        img.into_raw()
-    } else {
-        image::imageops::crop_imm(&img, 0, 0, iw, ih).to_image().into_raw()
-    };
-    Ok(letterbox(&gray, iw, ih, size))
+    let (w, h) = fit(img.width() as f32, img.height() as f32, size);
+    let small = image::imageops::resize(&img, w, h, image::imageops::FilterType::Triangle);
+    Ok(letterbox(small.as_raw(), w, h, size))
 }
 
 #[cfg(test)]
