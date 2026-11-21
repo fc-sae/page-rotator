@@ -325,3 +325,60 @@ def test_recheck_requires_predictions(tmp_path):
     with pytest.raises(ValueError):
         label.make_server(tmp_path / "pages", None, tmp_path / "labels.csv", tmp_path / "thumbs",
                           port=0, recheck=True)
+
+
+def test_split_review_shows_all_labeled_pages_of_split(tmp_path):
+    make_data(tmp_path)
+    (tmp_path / "labels.csv").write_text(
+        "pdf_id,page,rotation,status,labeled_at\n"
+        f"{PDF_A},1,90,ok,t\n{PDF_A},2,0,ok,t\n{PDF_B},1,0,skip,t\n{PDF_B},2,270,ok,t\n")
+    splits = tmp_path / "split.csv"
+    splits.write_text(f"pdf_id,split\n{PDF_A},train\n{PDF_B},test\n")
+    pred = tmp_path / "pred.csv"
+    pred.write_text("pdf_id,page,rotation,confidence,consistent,decided,label,split\n"
+                    f"{PDF_A},1,90,0.9,1,90,90,train\n{PDF_A},2,0,0.95,1,0,0,train\n"
+                    f"{PDF_B},1,90,0.70,1,0,skip,test\n{PDF_B},2,270,0.93,1,270,270,test\n")
+    srv = label.make_server(tmp_path / "pages", None, tmp_path / "labels.csv", tmp_path / "thumbs",
+                            port=0, predictions=pred, split="test", splits_csv=splits)
+    t = threading.Thread(target=srv.serve_forever, daemon=True)
+    t.start()
+    try:
+        d = get_json(srv, "/api/batch?n=24")
+        assert [(p["pdf_id"], p["page"], p["rotation"], p["status"], p["model_rotation"])
+                for p in d["pages"]] == [(PDF_B, 1, 0, "skip", 90), (PDF_B, 2, 270, "ok", 270)]
+        assert (d["progress"]["labeled"], d["progress"]["target"]) == (0, 2)
+        post(srv, [row(PDF_B, 1, 0)]).close()
+        d = get_json(srv, "/api/batch?n=24")
+        assert [p["page"] for p in d["pages"]] == [2]
+        assert d["progress"]["labeled"] == 1
+        assert srv.store.labels[(PDF_B, 1)]["status"] == "ok"
+    finally:
+        srv.shutdown()
+        srv.server_close()
+        t.join()
+
+
+def test_split_review_without_predictions_and_bad_split(tmp_path):
+    make_data(tmp_path)
+    (tmp_path / "labels.csv").write_text(
+        f"pdf_id,page,rotation,status,labeled_at\n{PDF_B},2,90,ok,t\n")
+    splits = tmp_path / "split.csv"
+    splits.write_text(f"pdf_id,split\n{PDF_A},train\n{PDF_B},test\n")
+    srv = label.make_server(tmp_path / "pages", None, tmp_path / "labels.csv", tmp_path / "thumbs",
+                            port=0, split="test", splits_csv=splits)
+    t = threading.Thread(target=srv.serve_forever, daemon=True)
+    t.start()
+    try:
+        pages = get_json(srv, "/api/batch?n=24")["pages"]
+        assert [(p["pdf_id"], p["page"], p["rotation"], p["status"]) for p in pages] == [(PDF_B, 2, 90, "ok")]
+        assert "model_rotation" not in pages[0]
+    finally:
+        srv.shutdown()
+        srv.server_close()
+        t.join()
+    with pytest.raises(ValueError):
+        label.make_server(tmp_path / "pages", None, tmp_path / "labels.csv", tmp_path / "thumbs",
+                          port=0, split="nope", splits_csv=splits)
+    with pytest.raises(ValueError):
+        label.make_server(tmp_path / "pages", None, tmp_path / "labels.csv", tmp_path / "thumbs",
+                          port=0, split="test", recheck=True, predictions=tmp_path / "x", splits_csv=splits)

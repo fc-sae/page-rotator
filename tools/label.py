@@ -4,6 +4,8 @@ Solo escucha en 127.0.0.1. Uso: uv run python label.py [--port 8765] [--target 1
 Con --predictions (salida de predict.py) la cola va de menor a mayor confianza y cada página
 arranca con la rotación predicha. Con --recheck además se revisan solo las páginas ya etiquetadas
 en las que el modelo no coincide (cada una muestra la etiqueta actual; el modelo va en el tooltip).
+Con --split test se revisan todas las páginas etiquetadas de los PDFs de esa partición (test dorado),
+cada una con su etiqueta actual aplicada; --predictions es opcional y solo agrega el tooltip.
 """
 
 from __future__ import annotations
@@ -37,11 +39,23 @@ def _load_clusters(clusters_csv: Path | None) -> dict[tuple[str, int], int]:
     return out
 
 
+def _split_ids(splits_csv: Path | None, split: str) -> set[str]:
+    if splits_csv is None or not Path(splits_csv).exists():
+        raise ValueError(f"no existe {splits_csv}; corre train.py primero")
+    with Path(splits_csv).open(newline="", encoding="utf-8") as f:
+        ids = {r["pdf_id"] for r in csv.DictReader(f) if r["split"] == split}
+    if not ids:
+        raise ValueError(f"la partición {split!r} no tiene PDFs en {splits_csv}")
+    return ids
+
+
 class _Server(ThreadingHTTPServer):
     daemon_threads = True
 
     def __init__(self, addr, pages_dir, clusters_csv, labels_csv, thumbs_dir, target, predictions=None,
-                 recheck=False):
+                 recheck=False, split=None, splits_csv=None):
+        if recheck and split is not None:
+            raise ValueError("usa --recheck o --split, no ambos")
         super().__init__(addr, _Handler)
         self.pages_dir = Path(pages_dir)
         self.thumbs_dir = Path(thumbs_dir)
@@ -50,9 +64,14 @@ class _Server(ThreadingHTTPServer):
         self.lock = threading.Lock()
         self.cluster_of = _load_clusters(clusters_csv)
         self.preds: dict[tuple[str, int], dict] | None = None
-        self.recheck = recheck
-        self.done: set[tuple[str, int]] = set()  # revisadas en esta sesión (modo --recheck)
-        if predictions is not None:
+        self.review = recheck or split is not None  # se revisan etiquetas existentes
+        self.done: set[tuple[str, int]] = set()  # revisadas en esta sesión (modos de revisión)
+        if split is not None:
+            if predictions is not None:
+                _, self.preds = load_predictions(predictions)
+            ids = _split_ids(splits_csv, split)
+            self.queue = sorted(k for k in self.store.labels if k[0] in ids)
+        elif predictions is not None:
             self.queue, self.preds = load_predictions(predictions)
             if recheck:
                 self.queue = [k for k in self.queue if self.preds[k]["label"] not in ("", "skip")
@@ -63,6 +82,10 @@ class _Server(ThreadingHTTPServer):
             self.queue = build_queue(self.pages_dir / "manifest.csv", clusters_csv)
 
     def progress(self) -> dict:
+        if self.review:
+            done = sum(1 for k in self.queue if k in self.done)
+            skipped = sum(1 for k in self.queue if (r := self.store.labels.get(k)) and r["status"] == "skip")
+            return {"labeled": done, "target": len(self.queue), "total": len(self.queue), "skipped": skipped}
         skipped = sum(1 for r in self.store.labels.values() if r["status"] == "skip")
         return {"labeled": len(self.store), "target": self.target, "total": len(self.queue),
                 "skipped": skipped}
@@ -121,16 +144,20 @@ class _Handler(BaseHTTPRequestHandler):
             for key in srv.queue:
                 if len(pages) >= n:
                     break
-                if (key in srv.done) if srv.recheck else (key in srv.store):
+                if (key in srv.done) if srv.review else (key in srv.store):
                     continue
                 item = {"pdf_id": key[0], "page": key[1], "cluster": srv.cluster_of.get(key)}
-                if srv.preds is not None:
-                    pr = srv.preds[key]
+                pr = srv.preds.get(key) if srv.preds is not None else None
+                if pr is not None:
                     item.update(rotation=pr["rotation"], confidence=pr["confidence"])
-                    if srv.recheck:
-                        cur = srv.store.labels.get(key)
-                        item.update(rotation=int(cur["rotation"]) if cur else int(pr["label"]),
-                                    model_rotation=pr["rotation"])
+                if srv.review:
+                    cur = srv.store.labels.get(key)
+                    if cur is not None:
+                        item.update(rotation=int(cur["rotation"]), status=cur["status"])
+                    elif pr is not None:
+                        item.update(rotation=int(pr["label"]))
+                    if pr is not None:
+                        item.update(model_rotation=pr["rotation"])
                 pages.append(item)
             progress = srv.progress()
         self._json(200, {"pages": pages, "progress": progress})
@@ -185,10 +212,11 @@ class _Handler(BaseHTTPRequestHandler):
 
 def make_server(pages_dir: Path, clusters_csv: Path | None, labels_csv: Path, thumbs_dir: Path,
                 target: int = 1000, port: int = 0, predictions: Path | None = None,
-                recheck: bool = False) -> ThreadingHTTPServer:
+                recheck: bool = False, split: str | None = None,
+                splits_csv: Path | None = None) -> ThreadingHTTPServer:
     """Crea el servidor en 127.0.0.1 (port=0 elige un puerto libre); no lo arranca."""
     return _Server(("127.0.0.1", port), pages_dir, clusters_csv, labels_csv, thumbs_dir, target, predictions,
-                   recheck)
+                   recheck, split, splits_csv)
 
 
 def main(argv: list[str] | None = None) -> None:
@@ -204,6 +232,9 @@ def main(argv: list[str] | None = None) -> None:
                     help="predictions.csv de predict.py: revisar primero las de menor confianza")
     ap.add_argument("--recheck", action="store_true",
                     help="con --predictions: revisar las etiquetadas en las que el modelo no coincide")
+    ap.add_argument("--split", default=None,
+                    help="revisar todas las etiquetadas de esa partición (p. ej. test: el test dorado)")
+    ap.add_argument("--splits", type=Path, default=REPO / "data" / "splits" / "split.csv")
     args = ap.parse_args(argv)
 
     clusters = args.clusters if args.clusters.exists() else None
@@ -214,7 +245,7 @@ def main(argv: list[str] | None = None) -> None:
         sys.exit(f"No existe {args.predictions}; corre predict.py primero.")
     try:
         srv = make_server(args.pages, clusters, args.labels, args.thumbs, args.target, args.port,
-                          args.predictions, args.recheck)
+                          args.predictions, args.recheck, args.split, args.splits)
     except OSError as e:
         sys.exit(f"El puerto {args.port} está ocupado (¿ya está abierta la herramienta?). Usa --port."
                  if e.errno == errno.EADDRINUSE else f"No se pudo iniciar el servidor: {e}")

@@ -222,7 +222,7 @@
       progress = d.progress;
       setScreen(d.pages, d.pages.map(function (p) {
         var dr = drafts[draftKey(p)];
-        return dr ? {rotation: dr.rotation, status: dr.status} : {rotation: p.rotation || 0, status: 'ok'};  // p.rotation: predicción
+        return dr ? {rotation: dr.rotation, status: dr.status} : {rotation: p.rotation || 0, status: p.status || 'ok'};  // p.rotation: predicción o etiqueta actual
       }));
     });
   }
