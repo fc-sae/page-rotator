@@ -124,6 +124,19 @@ def build_queue(pages_manifest: Path, clusters_csv: Path | None, seed: int = 0) 
     return queue
 
 
+def load_predictions(predictions_csv: Path) -> tuple[list[tuple[str, int]], dict[tuple[str, int], dict]]:
+    """Cola de predict.py: de menor a mayor confianza, con la rotación predicha de cada página."""
+    preds: dict[tuple[str, int], dict] = {}
+    with Path(predictions_csv).open(newline="", encoding="utf-8") as f:
+        for r in csv.DictReader(f):
+            rot = int(r["rotation"])
+            if rot not in ROTATIONS:
+                raise ValueError(f"{predictions_csv}: rotación inválida {rot}")
+            preds[(r["pdf_id"], int(r["page"]))] = {"rotation": rot, "confidence": float(r["confidence"])}
+    queue = sorted(preds, key=lambda k: (preds[k]["confidence"], k))
+    return queue, preds
+
+
 def image_path(pages_dir: Path, thumbs_dir: Path, pdf_id: str, page: int, size: str) -> Path | None:
     """Ruta de la imagen de una página (`full` = PNG original, `thumb` = JPEG de 320 px).
 

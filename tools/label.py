@@ -1,6 +1,8 @@
 """Servidor local de etiquetado: sirve la interfaz, lotes de páginas, miniaturas y guarda etiquetas.
 
 Solo escucha en 127.0.0.1. Uso: uv run python label.py [--port 8765] [--target 1000] [--no-browser]
+Con --predictions (salida de predict.py) la cola va de menor a mayor confianza y cada página
+arranca con la rotación predicha.
 """
 
 from __future__ import annotations
@@ -16,7 +18,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
 
-from labels import LabelStore, build_queue, image_path
+from labels import LabelStore, build_queue, image_path, load_predictions
 
 REPO = Path(__file__).resolve().parent.parent
 UI_PATH = Path(__file__).resolve().parent / "label_ui.html"
@@ -37,7 +39,7 @@ def _load_clusters(clusters_csv: Path | None) -> dict[tuple[str, int], int]:
 class _Server(ThreadingHTTPServer):
     daemon_threads = True
 
-    def __init__(self, addr, pages_dir, clusters_csv, labels_csv, thumbs_dir, target):
+    def __init__(self, addr, pages_dir, clusters_csv, labels_csv, thumbs_dir, target, predictions=None):
         super().__init__(addr, _Handler)
         self.pages_dir = Path(pages_dir)
         self.thumbs_dir = Path(thumbs_dir)
@@ -45,7 +47,11 @@ class _Server(ThreadingHTTPServer):
         self.store = LabelStore(labels_csv)
         self.lock = threading.Lock()
         self.cluster_of = _load_clusters(clusters_csv)
-        self.queue = build_queue(self.pages_dir / "manifest.csv", clusters_csv)
+        self.preds: dict[tuple[str, int], dict] | None = None
+        if predictions is not None:
+            self.queue, self.preds = load_predictions(predictions)
+        else:
+            self.queue = build_queue(self.pages_dir / "manifest.csv", clusters_csv)
 
     def progress(self) -> dict:
         skipped = sum(1 for r in self.store.labels.values() if r["status"] == "skip")
@@ -107,8 +113,10 @@ class _Handler(BaseHTTPRequestHandler):
                 if len(pages) >= n:
                     break
                 if key not in srv.store:
-                    pages.append({"pdf_id": key[0], "page": key[1],
-                                  "cluster": srv.cluster_of.get(key)})
+                    item = {"pdf_id": key[0], "page": key[1], "cluster": srv.cluster_of.get(key)}
+                    if srv.preds is not None:
+                        item.update(srv.preds[key])
+                    pages.append(item)
             progress = srv.progress()
         self._json(200, {"pages": pages, "progress": progress})
 
@@ -160,9 +168,9 @@ class _Handler(BaseHTTPRequestHandler):
 
 
 def make_server(pages_dir: Path, clusters_csv: Path | None, labels_csv: Path, thumbs_dir: Path,
-                target: int = 1000, port: int = 0) -> ThreadingHTTPServer:
+                target: int = 1000, port: int = 0, predictions: Path | None = None) -> ThreadingHTTPServer:
     """Crea el servidor en 127.0.0.1 (port=0 elige un puerto libre); no lo arranca."""
-    return _Server(("127.0.0.1", port), pages_dir, clusters_csv, labels_csv, thumbs_dir, target)
+    return _Server(("127.0.0.1", port), pages_dir, clusters_csv, labels_csv, thumbs_dir, target, predictions)
 
 
 def main(argv: list[str] | None = None) -> None:
@@ -174,14 +182,19 @@ def main(argv: list[str] | None = None) -> None:
     ap.add_argument("--port", type=int, default=8765)
     ap.add_argument("--target", type=int, default=1000)
     ap.add_argument("--no-browser", action="store_true")
+    ap.add_argument("--predictions", type=Path, default=None,
+                    help="predictions.csv de predict.py: revisar primero las de menor confianza")
     args = ap.parse_args(argv)
 
     clusters = args.clusters if args.clusters.exists() else None
     manifest = args.pages / "manifest.csv"
     if not manifest.exists():
         sys.exit(f"No existe {manifest}; corre render.py primero.")
+    if args.predictions is not None and not args.predictions.exists():
+        sys.exit(f"No existe {args.predictions}; corre predict.py primero.")
     try:
-        srv = make_server(args.pages, clusters, args.labels, args.thumbs, args.target, args.port)
+        srv = make_server(args.pages, clusters, args.labels, args.thumbs, args.target, args.port,
+                          args.predictions)
     except OSError as e:
         sys.exit(f"El puerto {args.port} está ocupado (¿ya está abierta la herramienta?). Usa --port."
                  if e.errno == errno.EADDRINUSE else f"No se pudo iniciar el servidor: {e}")

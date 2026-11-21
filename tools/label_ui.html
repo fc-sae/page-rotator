@@ -112,15 +112,17 @@
     pages.forEach(function (p, i) {
       var c = document.createElement('div');
       c.className = 'cell';
+      if (p.confidence != null) c.title = 'confianza del modelo ' + p.confidence.toFixed(2);
       var box = document.createElement('div');
       box.className = 'box';
       var img = document.createElement('img');
       pendingImgs++;
-      img.addEventListener('load', function () { pendingImgs--; lastImgEvent = Date.now(); updateEstado(); });
+      img.addEventListener('load', function () { if (labels !== myLabels) return; pendingImgs--; lastImgEvent = Date.now(); updateEstado(); });
       img.addEventListener('error', function () {
+        if (labels !== myLabels) return;  // evento tardío de una pantalla anterior
         pendingImgs--; lastImgEvent = Date.now();
         var l = labels[i];
-        if (l && labels === myLabels) { l.broken = true; l.status = 'skip'; l.rotation = 0; refreshCell(i); }
+        if (l) { l.broken = true; l.status = 'skip'; l.rotation = 0; refreshCell(i); }
         updateEstado();
       });
       img.src = imgUrl(p, 'thumb');
@@ -218,7 +220,7 @@
       progress = d.progress;
       setScreen(d.pages, d.pages.map(function (p) {
         var dr = drafts[draftKey(p)];
-        return dr ? {rotation: dr.rotation, status: dr.status} : {rotation: 0, status: 'ok'};
+        return dr ? {rotation: dr.rotation, status: dr.status} : {rotation: p.rotation || 0, status: 'ok'};  // p.rotation: predicción
       }));
     });
   }

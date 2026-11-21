@@ -22,6 +22,9 @@ import numpy as np
 import torch
 from PIL import Image, ImageFilter
 
+# Las páginas son nuestras (render.py): algunas son enormes a 150 dpi y no son un ataque.
+Image.MAX_IMAGE_PIXELS = None
+
 CLASSES = [0, 90, 180, 270]
 SIZE = 384
 DEFAULT_BACKBONE = "mobilenetv3_large_100"

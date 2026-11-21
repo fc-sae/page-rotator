@@ -260,3 +260,35 @@ def test_progress_includes_skipped(server):
         p = json.load(r)["progress"]
     assert p["labeled"] == 2 and p["skipped"] == 1
     assert get_json(server, "/api/batch")["progress"]["skipped"] == 1
+
+
+def test_predictions_mode_orders_by_confidence(tmp_path):
+    make_data(tmp_path)
+    pred = tmp_path / "pred.csv"
+    pred.write_text("pdf_id,page,rotation,confidence,consistent,decided,label,split\n"
+                    f"{PDF_A},1,0,0.99,1,0,,train\n{PDF_A},2,90,0.40,1,0,,train\n"
+                    f"{PDF_B},1,270,0.70,1,0,,val\n{PDF_B},2,0,0.95,1,0,,test\n")
+    srv = label.make_server(tmp_path / "pages", None, tmp_path / "labels.csv", tmp_path / "thumbs",
+                            port=0, predictions=pred)
+    t = threading.Thread(target=srv.serve_forever, daemon=True)
+    t.start()
+    try:
+        d = get_json(srv, "/api/batch?n=24")
+        assert [(p["pdf_id"], p["page"], p["rotation"]) for p in d["pages"]] == [
+            (PDF_A, 2, 90), (PDF_B, 1, 270), (PDF_B, 2, 0), (PDF_A, 1, 0)]
+        assert d["pages"][0]["confidence"] == 0.4
+        post(srv, [row(PDF_A, 2, 90)]).close()
+        assert get_json(srv, "/api/batch?n=1")["pages"][0]["pdf_id"] == PDF_B
+    finally:
+        srv.shutdown()
+        srv.server_close()
+        t.join()
+
+
+def test_predictions_mode_rejects_bad_rotation(tmp_path):
+    make_data(tmp_path)
+    pred = tmp_path / "pred.csv"
+    pred.write_text(f"pdf_id,page,rotation,confidence\n{PDF_A},1,45,0.5\n")
+    with pytest.raises(ValueError):
+        label.make_server(tmp_path / "pages", None, tmp_path / "labels.csv", tmp_path / "thumbs",
+                          port=0, predictions=pred)
