@@ -292,3 +292,36 @@ def test_predictions_mode_rejects_bad_rotation(tmp_path):
     with pytest.raises(ValueError):
         label.make_server(tmp_path / "pages", None, tmp_path / "labels.csv", tmp_path / "thumbs",
                           port=0, predictions=pred)
+
+
+def test_recheck_mode_shows_disagreements_with_current_label(tmp_path):
+    make_data(tmp_path)
+    (tmp_path / "labels.csv").write_text(
+        "pdf_id,page,rotation,status,labeled_at\n"
+        f"{PDF_A},1,90,ok,t\n{PDF_A},2,0,ok,t\n{PDF_B},1,0,skip,t\n")
+    pred = tmp_path / "pred.csv"
+    pred.write_text("pdf_id,page,rotation,confidence,consistent,decided,label,split\n"
+                    f"{PDF_A},1,0,0.90,1,0,90,train\n{PDF_A},2,0,0.95,1,0,0,train\n"
+                    f"{PDF_B},1,90,0.70,1,0,skip,val\n{PDF_B},2,90,0.6,1,0,,test\n")
+    srv = label.make_server(tmp_path / "pages", None, tmp_path / "labels.csv", tmp_path / "thumbs",
+                            port=0, predictions=pred, recheck=True)
+    t = threading.Thread(target=srv.serve_forever, daemon=True)
+    t.start()
+    try:
+        d = get_json(srv, "/api/batch?n=24")
+        assert [(p["pdf_id"], p["page"], p["rotation"], p["model_rotation"]) for p in d["pages"]] == [
+            (PDF_A, 1, 90, 0)]
+        post(srv, [row(PDF_A, 1, 0)]).close()
+        assert get_json(srv, "/api/batch?n=24")["pages"] == []
+        assert srv.store.labels[(PDF_A, 1)]["rotation"] == 0
+    finally:
+        srv.shutdown()
+        srv.server_close()
+        t.join()
+
+
+def test_recheck_requires_predictions(tmp_path):
+    make_data(tmp_path)
+    with pytest.raises(ValueError):
+        label.make_server(tmp_path / "pages", None, tmp_path / "labels.csv", tmp_path / "thumbs",
+                          port=0, recheck=True)

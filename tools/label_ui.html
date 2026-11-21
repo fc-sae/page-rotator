@@ -112,7 +112,9 @@
     pages.forEach(function (p, i) {
       var c = document.createElement('div');
       c.className = 'cell';
-      if (p.confidence != null) c.title = 'confianza del modelo ' + p.confidence.toFixed(2);
+      if (p.model_rotation != null) c.title = 'etiqueta actual; el modelo dice ' + (badgeText({rotation: p.model_rotation, status: 'ok'}) || 'derecha') +
+        ' (' + p.confidence.toFixed(2) + ')';
+      else if (p.confidence != null) c.title = 'confianza del modelo ' + p.confidence.toFixed(2);
       var box = document.createElement('div');
       box.className = 'box';
       var img = document.createElement('img');

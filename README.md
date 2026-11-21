@@ -60,3 +60,19 @@ El encabezado muestra `etiquetadas / meta (N duda)`.
 
 Las etiquetas se agregan a `data/labels.csv` en cada Enter (la última fila de cada página gana),
 así que se puede cerrar y continuar después. Las miniaturas se guardan en `data/thumbs/`.
+
+## Entrenamiento y revisión asistida
+
+```bash
+cd tools
+uv run python train.py            # data/models/orientation.pt + metrics.json (≈5 min en la RTX 4060)
+uv run python predict.py          # data/predictions.csv: predicción y confianza de cada página
+uv run python label.py --predictions ../data/predictions.csv            # sin etiqueta, menor confianza primero
+uv run python label.py --predictions ../data/predictions.csv --recheck  # etiquetadas donde el modelo no coincide
+uv run python export.py           # data/models/orientation.onnx (+ .json) para la CLI
+```
+
+Con `--predictions` cada página arranca con la rotación predicha (Enter confirma) y el tooltip muestra la
+confianza. Con `--recheck` cada página muestra tu etiqueta actual y el tooltip dice qué predice el modelo.
+La partición train/val/test es por PDF y se fija en `data/splits/split.csv` la primera vez; `test` será el
+test dorado, así que `train.py --test` se usa poco.

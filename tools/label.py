@@ -2,7 +2,8 @@
 
 Solo escucha en 127.0.0.1. Uso: uv run python label.py [--port 8765] [--target 1000] [--no-browser]
 Con --predictions (salida de predict.py) la cola va de menor a mayor confianza y cada página
-arranca con la rotación predicha.
+arranca con la rotación predicha. Con --recheck además se revisan solo las páginas ya etiquetadas
+en las que el modelo no coincide (cada una muestra la etiqueta actual; el modelo va en el tooltip).
 """
 
 from __future__ import annotations
@@ -39,7 +40,8 @@ def _load_clusters(clusters_csv: Path | None) -> dict[tuple[str, int], int]:
 class _Server(ThreadingHTTPServer):
     daemon_threads = True
 
-    def __init__(self, addr, pages_dir, clusters_csv, labels_csv, thumbs_dir, target, predictions=None):
+    def __init__(self, addr, pages_dir, clusters_csv, labels_csv, thumbs_dir, target, predictions=None,
+                 recheck=False):
         super().__init__(addr, _Handler)
         self.pages_dir = Path(pages_dir)
         self.thumbs_dir = Path(thumbs_dir)
@@ -48,8 +50,15 @@ class _Server(ThreadingHTTPServer):
         self.lock = threading.Lock()
         self.cluster_of = _load_clusters(clusters_csv)
         self.preds: dict[tuple[str, int], dict] | None = None
+        self.recheck = recheck
+        self.done: set[tuple[str, int]] = set()  # revisadas en esta sesión (modo --recheck)
         if predictions is not None:
             self.queue, self.preds = load_predictions(predictions)
+            if recheck:
+                self.queue = [k for k in self.queue if self.preds[k]["label"] not in ("", "skip")
+                              and int(self.preds[k]["label"]) != self.preds[k]["rotation"]]
+        elif recheck:
+            raise ValueError("--recheck necesita --predictions")
         else:
             self.queue = build_queue(self.pages_dir / "manifest.csv", clusters_csv)
 
@@ -112,11 +121,17 @@ class _Handler(BaseHTTPRequestHandler):
             for key in srv.queue:
                 if len(pages) >= n:
                     break
-                if key not in srv.store:
-                    item = {"pdf_id": key[0], "page": key[1], "cluster": srv.cluster_of.get(key)}
-                    if srv.preds is not None:
-                        item.update(srv.preds[key])
-                    pages.append(item)
+                if (key in srv.done) if srv.recheck else (key in srv.store):
+                    continue
+                item = {"pdf_id": key[0], "page": key[1], "cluster": srv.cluster_of.get(key)}
+                if srv.preds is not None:
+                    pr = srv.preds[key]
+                    item.update(rotation=pr["rotation"], confidence=pr["confidence"])
+                    if srv.recheck:
+                        cur = srv.store.labels.get(key)
+                        item.update(rotation=int(cur["rotation"]) if cur else int(pr["label"]),
+                                    model_rotation=pr["rotation"])
+                pages.append(item)
             progress = srv.progress()
         self._json(200, {"pages": pages, "progress": progress})
 
@@ -159,6 +174,7 @@ class _Handler(BaseHTTPRequestHandler):
                 raise ValueError("se esperaba una lista de objetos")
             with self.server.lock:
                 self.server.store.add(rows)
+                self.server.done.update((r["pdf_id"], int(r["page"])) for r in rows)
                 progress = self.server.progress()
         except (ValueError, KeyError, TypeError) as e:
             return self._json(400, {"error": f"petición inválida: {e!r}"})
@@ -168,9 +184,11 @@ class _Handler(BaseHTTPRequestHandler):
 
 
 def make_server(pages_dir: Path, clusters_csv: Path | None, labels_csv: Path, thumbs_dir: Path,
-                target: int = 1000, port: int = 0, predictions: Path | None = None) -> ThreadingHTTPServer:
+                target: int = 1000, port: int = 0, predictions: Path | None = None,
+                recheck: bool = False) -> ThreadingHTTPServer:
     """Crea el servidor en 127.0.0.1 (port=0 elige un puerto libre); no lo arranca."""
-    return _Server(("127.0.0.1", port), pages_dir, clusters_csv, labels_csv, thumbs_dir, target, predictions)
+    return _Server(("127.0.0.1", port), pages_dir, clusters_csv, labels_csv, thumbs_dir, target, predictions,
+                   recheck)
 
 
 def main(argv: list[str] | None = None) -> None:
@@ -184,6 +202,8 @@ def main(argv: list[str] | None = None) -> None:
     ap.add_argument("--no-browser", action="store_true")
     ap.add_argument("--predictions", type=Path, default=None,
                     help="predictions.csv de predict.py: revisar primero las de menor confianza")
+    ap.add_argument("--recheck", action="store_true",
+                    help="con --predictions: revisar las etiquetadas en las que el modelo no coincide")
     args = ap.parse_args(argv)
 
     clusters = args.clusters if args.clusters.exists() else None
@@ -194,7 +214,7 @@ def main(argv: list[str] | None = None) -> None:
         sys.exit(f"No existe {args.predictions}; corre predict.py primero.")
     try:
         srv = make_server(args.pages, clusters, args.labels, args.thumbs, args.target, args.port,
-                          args.predictions)
+                          args.predictions, args.recheck)
     except OSError as e:
         sys.exit(f"El puerto {args.port} está ocupado (¿ya está abierta la herramienta?). Usa --port."
                  if e.errno == errno.EADDRINUSE else f"No se pudo iniciar el servidor: {e}")

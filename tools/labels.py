@@ -132,7 +132,8 @@ def load_predictions(predictions_csv: Path) -> tuple[list[tuple[str, int]], dict
             rot = int(r["rotation"])
             if rot not in ROTATIONS:
                 raise ValueError(f"{predictions_csv}: rotación inválida {rot}")
-            preds[(r["pdf_id"], int(r["page"]))] = {"rotation": rot, "confidence": float(r["confidence"])}
+            preds[(r["pdf_id"], int(r["page"]))] = {"rotation": rot, "confidence": float(r["confidence"]),
+                                                    "label": r.get("label", "")}
     queue = sorted(preds, key=lambda k: (preds[k]["confidence"], k))
     return queue, preds
 
